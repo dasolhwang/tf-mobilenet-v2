@@ -144,11 +144,8 @@ def mobilenet_v2_cls(inputs,
             if num_classes:
                 net = slim.dropout(net, keep_prob=dropout_keep_prob, scope='Dropout_1')
                 # global pool
-                # TODO : as in the original paper, it must change the number of channels.
-                # but normally, average pooling doesn't change it. I sent an email to authors to check this.
-                net = tf.reduce_mean(net, [1, 2], keep_dims=True, name='Global_pool')
-                # net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
-                #                   normalizer_fn=None, scope='Global_pool')
+                # Issue #1 : https://github.com/ildoonet/tf-mobilenet-v2/issues/1
+                net = tf.reduce_mean(net, [1, 2], keepdims=True, name='Global_pool')
                 end_points['Global_pool'] = net
 
                 # classification
