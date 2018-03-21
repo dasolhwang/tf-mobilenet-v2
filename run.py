@@ -32,17 +32,17 @@ author_dir = '/data/public/ro/dataset/images/imagenet/ILSVRC/2012/object_localiz
 
 
 class MobilenetRunner:
-    def __init__(self, cls_size=1000):
+    def __init__(self):
         # hyperparameters & meta data
-        self.op_decay_steps = 10000
-        self.op_decay_rate = 0.98
-        self.interval_train_log = 500
-        self.interval_valid_log = 10000
+        self.__op_decay_steps_epoch = 1
+        self.__interval_train_log_epoch = 0.1
+        self.__interval_valid_log_epoch = 1
 
         # persistent tensorflow sessions
         self.persistent_sess = tf.Session(config=tf.ConfigProto())
         self.global_step = tf.Variable(0, trainable=False)
         self.global_step_add = tf.assign(self.global_step, self.global_step + 1)
+        self.is_training = tf.placeholder(tf.bool, name='is_training')
 
         # tensors for training
         self.ph_train_image = tf.placeholder(tf.float32, shape=(None, 224, 224, 3), name='image_train')
@@ -53,7 +53,7 @@ class MobilenetRunner:
         self.acc_train_top5 = None
         self.optimizer = None
         self.optimize_op = None
-        self.post_init_op = None
+        self.sync_op = None
         self.enqueue_thread = None
         self.learning_rate = None
 
@@ -102,7 +102,7 @@ class MobilenetRunner:
             ]
         return get_imagenet_dataflow(datadir, 'train' if is_train else 'val', batch, augmentors)
 
-    def train(self, datadir=author_dir, batch=128, max_epoch=200, num_gpu=1,
+    def train(self, datadir=author_dir, batch=256, max_epoch=250, num_gpu=1,
               depth_multiplier=1.0, learning_rate_init=0.0001,
               model_path='/data/private/tf-mobilenet-v2-model/', checkpoint=None):
         assert os.path.exists(datadir), 'not exist datadir(%s)' % datadir
@@ -111,6 +111,11 @@ class MobilenetRunner:
         assert num_gpu > 0, 'num_gpu should be larger than 0, max_epoch=%d' % num_gpu
         assert depth_multiplier > 0, 'depth_multiplier should be larger than 0, depth_multiplier=%d' % depth_multiplier
         assert learning_rate_init > 0, 'learning_rate_init should be larger than 0, learning_rate_init=%d' % learning_rate_init
+
+        op_decay_steps = int(round(DATA_PER_EPOCH * self.__op_decay_steps_epoch / batch))
+        op_decay_rate = 0.98
+        __interval_train_log = int(round(DATA_PER_EPOCH * self.__interval_train_log_epoch / batch))
+        __interval_valid_log = int(round(DATA_PER_EPOCH * self.__interval_valid_log_epoch / batch))
 
         if self.output_train is None:
             # create dataflow & queue
@@ -123,8 +128,8 @@ class MobilenetRunner:
             # create optimizer
             self.learning_rate = tf.train.exponential_decay(
                 learning_rate_init, self.global_step,
-                decay_steps=self.op_decay_steps,
-                decay_rate=self.op_decay_rate,
+                decay_steps=op_decay_steps,
+                decay_rate=op_decay_rate,
                 staircase=True
             )
             self.optimizer = tf.train.RMSPropOptimizer(self.learning_rate, decay=0.9, momentum=0.9)
@@ -133,15 +138,17 @@ class MobilenetRunner:
             logits = []
             losses = []
             grad_list = []
-            ph_train_image_batch = tf.split(image_tensor, num_gpu)
-            ph_train_label_batch = tf.split(label_tensor, num_gpu)
+            ph_train_image_batch = tf.split(image_tensor, num_gpu, name='train_split')
+            ph_train_label_batch = tf.split(label_tensor, num_gpu, name='label_split')
             for gpu_idx in range(num_gpu):
                 logger.info('creating gpu tower @ %d' % (gpu_idx + 1))
                 with tf.device(tf.DeviceSpec(device_type="GPU", device_index=gpu_idx)), tf.variable_scope('tower%d' % gpu_idx):
-                    logit, _ = self.__create_network_for_imagenet(ph_train_image_batch[gpu_idx],
-                                                                  is_training=True,
-                                                                  is_reuse=False,
-                                                                  depth_multiplier=depth_multiplier)
+                    logit, _ = self.__create_network_for_imagenet(
+                        ph_train_image_batch[gpu_idx],
+                        is_training=self.is_training,
+                        is_reuse=False,
+                        depth_multiplier=depth_multiplier
+                    )
                     logits.append(logit)
 
                     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -165,21 +172,25 @@ class MobilenetRunner:
 
             # use NCCL
             grads, all_vars = split_grad_list(grad_list)
-            reduced_grad = allreduce_grads(grads, average=False)
+            reduced_grad = allreduce_grads(grads, average=True)
             grads = merge_grad_list(reduced_grad, all_vars)
 
             # optimizer using NCCL
             train_ops = []
-            with tf.name_scope('apply_gradients'):
-                for idx, grad_and_vars in enumerate(grads):
-                    with tf.device(tf.DeviceSpec(device_type="GPU", device_index=idx)):
-                        # apply_gradients may create variables. Make them LOCAL_VARIABLES
-                        with override_to_local_variable(enable=idx > 0):
-                            train_ops.append(self.optimizer.apply_gradients(grad_and_vars, name='apply_grad_{}'.format(idx)))
+            for idx, grad_and_vars in enumerate(grads):
+                with tf.name_scope('apply_gradients'), tf.device(tf.DeviceSpec(device_type="GPU", device_index=idx)):
+                    # apply_gradients may create variables. Make them LOCAL_VARIABLES
+                    with override_to_local_variable(enable=idx > 0):
+                        train_ops.append(self.optimizer.apply_gradients(grad_and_vars, name='apply_grad_{}'.format(idx)))
 
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            self.optimize_op = tf.group(tf.group(*train_ops, update_ops), name='train_op')
-            self.post_init_op = get_post_init_ops()
+            with tf.control_dependencies(update_ops):
+                self.optimize_op = tf.group(*train_ops, name='train_op')
+
+        if self.output_valid is None:
+            self.__create_validate(depth_multiplier, is_reuse=True)
+
+        self.sync_op = get_post_init_ops()
 
         # training
         best_ckpt_saver = BestCheckpointSaver(
@@ -203,17 +214,24 @@ class MobilenetRunner:
                 saver.restore(self.persistent_sess, tf.train.latest_checkpoint(model_path))
             else:
                 saver.restore(self.persistent_sess, model_path)
-            self.persistent_sess.run(self.post_init_op)
+            self.persistent_sess.run(self.sync_op)
             logger.info('start to train...')
 
             try:
                 while True:
-                    _, val_step = self.persistent_sess.run([self.optimize_op, self.global_step_add])
-                    if (val_step + 1) % self.interval_train_log == 0:
-                        _, _, val_loss, val_lr, val_acctop1, val_acctop5, val_q_size = self.persistent_sess.run([
-                            self.optimize_op, self.global_step_add, self.loss_train, self.learning_rate,
+                    _, val_step = self.persistent_sess.run(
+                        [self.optimize_op, self.global_step_add],
+                        feed_dict={
+                            self.is_training: True
+                        }
+                    )
+                    if (val_step + 1) % __interval_train_log == 0:
+                        val_loss, _, _, val_lr, val_acctop1, val_acctop5, val_q_size = self.persistent_sess.run([
+                            self.loss_train, self.optimize_op, self.global_step_add, self.learning_rate,
                             self.acc_train_top1, self.acc_train_top5, q_size
-                        ])
+                        ], feed_dict={
+                            self.is_training: True
+                        })
                         logger.info('training epoch=%.3f/%d step=%d lr=%.6f loss=%.5f acc_top1=%.2f acc_top5=%.2f q=%d'
                                     % (
                                         (val_step + 1) * batch / DATA_PER_EPOCH,
@@ -225,7 +243,7 @@ class MobilenetRunner:
                                         val_q_size
                                     ))
 
-                    if (val_step + 1) % self.interval_valid_log == 0:
+                    if (val_step + 1) % __interval_valid_log == 0:
                         val_loss, acc_dict = self.validate(datadir, checkpoint=None, depth_multiplier=depth_multiplier)
                         logger.info('-- validation loss=%.5f acc_top1=%.2f acc_top5=%.2f' % (
                             val_loss,
@@ -242,7 +260,7 @@ class MobilenetRunner:
                             best_val_acc5 = acc_dict['top5']
 
                         # periodic synchronization
-                        self.persistent_sess.run(self.post_init_op)
+                        self.persistent_sess.run(self.sync_op)
                     if val_step > DATA_PER_EPOCH // batch * max_epoch:
                         break
 
@@ -255,6 +273,25 @@ class MobilenetRunner:
         logger.info('training done. best_model val_loss=%.5f top1=%.3f top5=%.3f ckpt=%s' % (
             best_val_loss, best_val_acc1, best_val_acc5, chk_path
         ))
+
+    def __create_validate(self, depth_multiplier, is_reuse=False):
+        # create network graph for validation
+        logger.info('creating a mobilenet graph for validation...')
+        with tf.device(tf.DeviceSpec(device_type="GPU", device_index=0)), tf.variable_scope('tower0'), override_to_local_variable(enable=True):
+            self.output_valid, _ = self.__create_network_for_imagenet(
+                self.ph_valid_image,
+                is_training=self.is_training,
+                is_reuse=is_reuse,
+                depth_multiplier=depth_multiplier
+            )
+
+        # loss
+        self.loss_valid = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=self.ph_valid_label,
+            logits=self.output_valid
+        )
+        self.acc_valid_top1 = tf.cast(tf.nn.in_top_k(self.output_valid, self.ph_valid_label, k=1), dtype=tf.float32)
+        self.acc_valid_top5 = tf.cast(tf.nn.in_top_k(self.output_valid, self.ph_valid_label, k=5), dtype=tf.float32)
 
     def validate(self, datadir=author_dir, batch=128, checkpoint=None, depth_multiplier=1.0):
         """
@@ -269,29 +306,17 @@ class MobilenetRunner:
         assert (self.output_train is not None) if checkpoint is None else True, 'checkpoint is not provided when there are any exist graph.'
 
         if self.output_valid is None:
-            # create network graph for validation
-            logger.info('creating a mobilenet graph for validation...')
-
-            with tf.device(tf.DeviceSpec(device_type="GPU", device_index=0)), tf.variable_scope('tower0'):
-                self.output_valid, _ = self.__create_network_for_imagenet(
-                    self.ph_valid_image,
-                    is_training=False,
-                    is_reuse=True if checkpoint is None else False,
-                    depth_multiplier=depth_multiplier
-                )
-
-                # loss
-                self.loss_valid = tf.nn.sparse_softmax_cross_entropy_with_logits(
-                    labels=self.ph_valid_label,
-                    logits=self.output_valid
-                )
-                self.acc_valid_top1 = tf.cast(tf.nn.in_top_k(self.output_valid, self.ph_valid_label, k=1), dtype=tf.float32)
-                self.acc_valid_top5 = tf.cast(tf.nn.in_top_k(self.output_valid, self.ph_valid_label, k=5), dtype=tf.float32)
+            self.__create_validate(depth_multiplier, checkpoint is None)
 
         ds = self.__get_dataflow(is_train=False, batch=batch, datadir=datadir)
         with self.persistent_sess.as_default():
-            if checkpoint is not None:
-                # TODO : graph load
+            is_reuse = checkpoint is None
+            logger.debug('validate is_reuse=%d' % is_reuse)
+            if is_reuse:
+                # copy from tower0
+                pass
+            else:
+                # TODO : load
                 pass
 
             val_losses = []
@@ -302,8 +327,10 @@ class MobilenetRunner:
                     self.loss_valid, self.acc_valid_top1, self.acc_valid_top5
                 ], feed_dict={
                     self.ph_valid_image: img_batch,
-                    self.ph_valid_label: lb_batch
+                    self.ph_valid_label: lb_batch,
+                    self.is_training: False
                 })
+
                 val_losses.extend(val_loss)
                 val_acctop1s.extend(val_acctop1)
                 val_acctop5s.extend(val_acctop5)

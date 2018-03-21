@@ -76,7 +76,7 @@ def get_imagenet_dataflow(
         ds = dataset.ILSVRC12(datadir, name, shuffle=True)
         ds = AugmentImageComponent(ds, augmentors, copy=False)
         if parallel < 16:
-            logger.warn("DataFlow may become the bottleneck when too few processes are used.")
+            logger.warning("DataFlow may become the bottleneck when too few processes are used.")
         ds = PrefetchData(ds, 1000, parallel)
         ds = BatchData(ds, batch_size, remainder=False)
     else:
@@ -85,8 +85,11 @@ def get_imagenet_dataflow(
 
         def mapf(dp):
             fname, cls = dp
-            im = cv2.imread(fname, cv2.IMREAD_COLOR)
-            im = aug.augment(im)
+            try:
+                im = cv2.imread(fname, cv2.IMREAD_COLOR)
+                im = aug.augment(im)
+            except Exception as e:
+                logger.warning(str(e), 'file=', fname)
             return im, cls
         ds = MultiThreadMapData(ds, parallel, mapf, buffer_size=2000, strict=True)
         ds = BatchData(ds, batch_size, remainder=True)

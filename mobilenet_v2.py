@@ -139,17 +139,16 @@ def mobilenet_v2_cls(inputs,
                                                 conv_defs=conv_defs)
 
         with tf.variable_scope('Logits'):
-
             # class
             if num_classes:
-                net = slim.dropout(net, keep_prob=dropout_keep_prob, scope='Dropout_1')
+                net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_1')
                 # global pool
                 # Issue #1 : https://github.com/ildoonet/tf-mobilenet-v2/issues/1
                 net = tf.reduce_mean(net, [1, 2], keepdims=True, name='Global_pool')
                 end_points['Global_pool'] = net
 
                 # classification
-                net = slim.dropout(net, keep_prob=dropout_keep_prob, scope='Dropout_2')
+                net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_2')
                 net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
                                   normalizer_fn=None, scope='Conv2d_1c_1x1')
                 net = slim.flatten(net, scope='Flatten')

@@ -37,7 +37,7 @@ def allreduce_grads(all_grads, average=True):
             with tf.device(g.device):
                 # tensorflow/benchmarks didn't average gradients
                 if average:
-                    g = tf.multiply(g, 1.0 / nr_tower)
+                    g = tf.multiply(g, 1.0 / nr_tower, name='allreduce_avg')
             grads_for_devices.append(g)
         new_all_grads.append(grads_for_devices)
 
