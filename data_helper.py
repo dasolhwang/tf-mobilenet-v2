@@ -8,7 +8,8 @@ import cv2
 import numpy as np
 import multiprocessing
 
-from tensorpack import imgaug, dataset, DataFlowTerminated
+import time
+from tensorpack import imgaug, dataset, DataFlowTerminated, MapData
 from tensorpack.dataflow import (
     AugmentImageComponent, PrefetchData,
     BatchData, MultiThreadMapData)
@@ -71,12 +72,13 @@ def get_imagenet_dataflow(
     assert isinstance(augmentors, list)
     isTrain = name == 'train'
     if parallel is None:
-        parallel = min(40, multiprocessing.cpu_count())
+        parallel = min(40, multiprocessing.cpu_count() // 6)
     if isTrain:
         ds = dataset.ILSVRC12(datadir, name, shuffle=True)
         ds = AugmentImageComponent(ds, augmentors, copy=False)
         if parallel < 16:
             logger.warning("DataFlow may become the bottleneck when too few processes are used.")
+
         ds = PrefetchData(ds, 1000, parallel)
         ds = BatchData(ds, batch_size, remainder=False)
     else:
@@ -85,11 +87,15 @@ def get_imagenet_dataflow(
 
         def mapf(dp):
             fname, cls = dp
-            try:
-                im = cv2.imread(fname, cv2.IMREAD_COLOR)
-                im = aug.augment(im)
-            except Exception as e:
-                logger.warning(str(e), 'file=', fname)
+            im = np.zeros((256, 256, 3), dtype=np.uint8)
+            for _ in range(30):
+                try:
+                    im = cv2.imread(fname, cv2.IMREAD_COLOR)
+                    im = aug.augment(im)
+                    break
+                except Exception as e:
+                    logger.warning(str(e), 'file=', fname)
+                    time.sleep(1)
             return im, cls
         ds = MultiThreadMapData(ds, parallel, mapf, buffer_size=2000, strict=True)
         ds = BatchData(ds, batch_size, remainder=True)

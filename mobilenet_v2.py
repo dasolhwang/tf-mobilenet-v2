@@ -137,25 +137,24 @@ def mobilenet_v2_cls(inputs,
                                                 min_depth=min_depth,
                                                 depth_multiplier=depth_multiplier,
                                                 conv_defs=conv_defs)
+            with tf.variable_scope('Logits'):
+                # class
+                if num_classes:
+                    net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_1')
+                    # global pool
+                    # Issue #1 : https://github.com/ildoonet/tf-mobilenet-v2/issues/1
+                    net = tf.reduce_mean(net, [1, 2], keep_dims=True, name='Global_pool')
+                    end_points['Global_pool'] = net
 
-        with tf.variable_scope('Logits'):
-            # class
-            if num_classes:
-                net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_1')
-                # global pool
-                # Issue #1 : https://github.com/ildoonet/tf-mobilenet-v2/issues/1
-                net = tf.reduce_mean(net, [1, 2], keepdims=True, name='Global_pool')
-                end_points['Global_pool'] = net
+                    # classification
+                    net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_2')
+                    net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
+                                      normalizer_fn=None, scope='Conv2d_1c_1x1')
+                    net = slim.flatten(net, scope='Flatten')
+                    end_points['Logits'] = net
 
-                # classification
-                net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_2')
-                net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
-                                  normalizer_fn=None, scope='Conv2d_1c_1x1')
-                net = slim.flatten(net, scope='Flatten')
-                end_points['Logits'] = net
-
-                if prediction_fn:
-                    end_points['Predictions'] = prediction_fn(net, scope='Predictions')
+                    if prediction_fn:
+                        end_points['Predictions'] = prediction_fn(net, scope='Predictions')
 
         return net, end_points
 
@@ -188,8 +187,10 @@ def mobilenet_v2_arg_scope(is_training=True,
         'is_training': is_training,
         'center': True,
         'scale': True,
-        'decay': 0.9997,
+        'decay': 0.9,
         'epsilon': 0.001,
+        'fused': True,
+        'zero_debias_moving_mean': True
     }
 
     # Set weight_decay for weights in Conv and DepthSepConv layers.
@@ -201,9 +202,9 @@ def mobilenet_v2_arg_scope(is_training=True,
         depthwise_regularizer = None
     with slim.arg_scope([slim.conv2d, slim.separable_conv2d],
                         weights_initializer=weights_init,
-                        normalizer_fn=slim.batch_norm):
+                        normalizer_fn=slim.batch_norm,
+                        normalizer_params=batch_norm_params):
         with slim.arg_scope([slim.batch_norm], **batch_norm_params):
             with slim.arg_scope([slim.conv2d], weights_regularizer=regularizer):
-                with slim.arg_scope([slim.separable_conv2d],
-                                    weights_regularizer=depthwise_regularizer) as sc:
+                with slim.arg_scope([slim.separable_conv2d], weights_regularizer=depthwise_regularizer) as sc:
                     return sc

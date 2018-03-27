@@ -92,8 +92,9 @@ def get_post_init_ops():
         prefix = split_name[0]
         realname = '/'.join(split_name[1:])
         if prefix in realname:
-            logger.error("variable {} has its prefix {} appears multiple times in its name!".format(v.name, prefix))
-        copy_from = var_by_name.get('tower0/' + realname)
+            # logger.warning("variable {} has its prefix {} appears multiple times in its name!".format(v.name, prefix))
+            pass
+        copy_from = var_by_name.get(v.name.replace('prefix', 'tower0'))
         if copy_from is not None:
             post_init_ops.append(v.assign(copy_from.read_value()))
         else:
