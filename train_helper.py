@@ -94,7 +94,7 @@ def get_post_init_ops():
         if prefix in realname:
             # logger.warning("variable {} has its prefix {} appears multiple times in its name!".format(v.name, prefix))
             pass
-        copy_from = var_by_name.get(v.name.replace('prefix', 'tower0'))
+        copy_from = var_by_name.get(v.name.replace(prefix, 'tower0'))
         if copy_from is not None:
             post_init_ops.append(v.assign(copy_from.read_value()))
         else:

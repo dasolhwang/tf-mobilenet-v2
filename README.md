@@ -7,6 +7,12 @@ Mobilenet V2(Inverted Residual) Implementation &amp; Trained Weights Using Tenso
 $ python3 run.py train --num_gpu=1 --depth_multiplier=1.0 --datadir=... 
 ```
 
+## Pretrained Models
+
+I trained in a few ways, but I failed to replicate the result from the original paper. (2~4% Accuracy Drop)
+
+But you can use the pretrained weight in tensorflow now : https://github.com/tensorflow/models/tree/master/research/slim#pre-trained-models
+
 ## References
 
 - [Inverted Residuals and Linear Bottlenecks: Mobile Networks for Classification, Detection and Segmentation](https://arxiv.org/abs/1801.04381)
