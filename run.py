@@ -11,7 +11,7 @@ from tensorpack.graph_builder import override_to_local_variable
 
 from checkmate.checkmate import BestCheckpointSaver, get_best_checkpoint
 from mobilenet_v2 import mobilenet_v2_arg_scope, mobilenet_v2_cls
-from data_helper import get_imagenet_dataflow, GoogleNetResize, DATA_PER_EPOCH, DataFlowToQueue
+from data_helper import get_imagenet_dataflow, GoogleNetResize, DATA_PER_EPOCH, DataFlowToQueue, get_augmentations
 from train_helper import allreduce_grads, split_grad_list, merge_grad_list, get_post_init_ops
 
 logger = logging.getLogger('Runner')
@@ -81,34 +81,11 @@ class MobilenetRunner:
             return net, end_points
 
     def __get_dataflow(self, is_train, batch, datadir):
-        if is_train:
-            augmentors = [
-                GoogleNetResize(crop_area_fraction=0.49, target_shape=224),
-                imgaug.RandomOrderAug(
-                    [imgaug.BrightnessScale((0.6, 1.4), clip=True),
-                     imgaug.Contrast((0.6, 1.4), clip=True),
-                     imgaug.Saturation(0.4, rgb=False),
-                     # rgb-bgr conversion for the constants copied from fb.resnet.torch
-                     imgaug.Lighting(0.1,
-                                     eigval=np.asarray(
-                                         [0.2175, 0.0188, 0.0045][::-1]) * 255.0,
-                                     eigvec=np.array(
-                                         [[-0.5675, 0.7192, 0.4009],
-                                          [-0.5808, -0.0045, -0.8140],
-                                          [-0.5836, -0.6948, 0.4203]],
-                                         dtype='float32')[::-1, ::-1]
-                                     )]),
-                imgaug.Flip(horiz=True),
-            ]
-        else:
-            augmentors = [
-                imgaug.ResizeShortestEdge(256, cv2.INTER_CUBIC),
-                imgaug.CenterCrop((224, 224)),
-            ]
+        augmentors = get_augmentations(is_train)
         return get_imagenet_dataflow(datadir, 'train' if is_train else 'val', batch, augmentors)
 
     def train(self, datadir=author_dir, batch=128, max_epoch=250, num_gpu=1,
-              depth_multiplier=1.0, learning_rate_init=0.045, optimizer='rmsprop',
+              depth_multiplier=1.0, learning_rate_init=0.045, optimizer='sgd',
               model_path='/data/private/tf-mobilenet-v2-model/', checkpoint=None):
         assert os.path.exists(datadir), 'not exist datadir(%s)' % datadir
         assert batch > 0, 'batch should be larger than 0, batch=%d' % batch
@@ -141,6 +118,8 @@ class MobilenetRunner:
             logger.info('optimizer=%s' % optimizer)
             if optimizer == 'rmsprop':
                 self.optimizer = tf.train.RMSPropOptimizer(self.learning_rate, decay=0.9, momentum=0.9)
+            elif optimizer == 'momentum':
+                self.optimizer = tf.train.MomentumOptimizer(self.learning_rate, momentum=0.9)
             elif optimizer == 'sgd':
                 self.optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
             elif optimizer == 'adam':
@@ -160,7 +139,8 @@ class MobilenetRunner:
                 train_image_batch.append(image_tensor)
                 train_label_batch.append(label_tensor)
 
-                with tf.device(tf.DeviceSpec(device_type="GPU", device_index=gpu_idx)), tf.variable_scope('tower%d' % gpu_idx):
+                scope_name = 'tower%d' % gpu_idx
+                with tf.device(tf.DeviceSpec(device_type="GPU", device_index=gpu_idx)), tf.variable_scope(scope_name):
                     logit, _ = self.__create_network_for_imagenet(
                         image_tensor,
                         is_training=self.is_training,
@@ -174,8 +154,9 @@ class MobilenetRunner:
                         logits=logit
                     )
                     losses.append(loss)
+                    loss_w_reg = tf.reduce_sum(loss) + tf.add_n(slim.losses.get_regularization_losses(scope=scope_name))
 
-                    grad_list.append([x for x in self.optimizer.compute_gradients(loss) if x[0] is not None])
+                    grad_list.append([x for x in self.optimizer.compute_gradients(loss_w_reg) if x[0] is not None])
 
             self.output_train = tf.concat(logits, axis=0)
             train_image_batch = tf.concat(train_image_batch, axis=0)
@@ -212,7 +193,8 @@ class MobilenetRunner:
         self.sync_op = get_post_init_ops()
 
         # weight saver : only tower0
-        saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tower0'))
+        # saver = tf.train.Saver(tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='tower0') + [self.global_step])
+        saver = tf.train.Saver()
         best_ckpt_saver = BestCheckpointSaver(
             save_dir=model_path,
             num_to_keep=100,
@@ -230,9 +212,9 @@ class MobilenetRunner:
                 self.enqueue_threads[idx].set_coordinator(coord)
                 self.enqueue_threads[idx].start()
             q_sizes = [self.enqueue_threads[idx].size() for idx in range(num_gpu)]
+            self.persistent_sess.run(tf.global_variables_initializer())
             if checkpoint is None:
                 logger.info('initialization - global variable init')
-                self.persistent_sess.run(tf.global_variables_initializer())
             elif checkpoint is 'latest':
                 logger.info('initialization - restore from latest one')
                 saver.restore(self.persistent_sess, tf.train.latest_checkpoint(model_path))
@@ -270,7 +252,7 @@ class MobilenetRunner:
 
                     if (val_step + 1) % __interval_valid_log == 0:
                         val_loss, acc_dict = self.validate(datadir, checkpoint=None, depth_multiplier=depth_multiplier)
-                        logger.info('-- validation loss=%.5f acc_top1=%.2f acc_top5=%.2f' % (
+                        logger.info('-- validation loss=%.5f acc_top1=%.5f acc_top5=%.5f' % (
                             val_loss,
                             acc_dict['top1'],
                             acc_dict['top5']
@@ -295,7 +277,7 @@ class MobilenetRunner:
                 saver.save(self.persistent_sess, os.path.join(model_path, 'model'), global_step=val_step)
 
         chk_path = get_best_checkpoint(model_path, select_maximum_value=False)
-        logger.info('training done. best_model val_loss=%.5f top1=%.3f top5=%.3f ckpt=%s' % (
+        logger.info('training done. best_model val_loss=%.5f top1=%.5f top5=%.5f ckpt=%s' % (
             best_val_loss, best_val_acc1, best_val_acc5, chk_path
         ))
 

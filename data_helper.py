@@ -56,7 +56,7 @@ class GoogleNetResize(imgaug.ImageAugmentor):
                 out = cv2.resize(out, (self.target_shape, self.target_shape), interpolation=cv2.INTER_CUBIC)
                 return out
         out = imgaug.ResizeShortestEdge(self.target_shape, interp=cv2.INTER_CUBIC).augment(img)
-        out = imgaug.CenterCrop(self.target_shape).augment(out)
+        out = imgaug.RandomCrop(self.target_shape).augment(out)     # TODO : Random Crop?
         return out
 
 
@@ -72,7 +72,8 @@ def get_imagenet_dataflow(
     assert isinstance(augmentors, list)
     isTrain = name == 'train'
     if parallel is None:
-        parallel = min(40, multiprocessing.cpu_count() // 6)
+        # parallel = min(40, multiprocessing.cpu_count() // 6)
+        parallel = min(40, multiprocessing.cpu_count() // 16)
     if isTrain:
         ds = dataset.ILSVRC12(datadir, name, shuffle=True)
         ds = AugmentImageComponent(ds, augmentors, copy=False)
@@ -173,3 +174,31 @@ class DataFlowToQueue(threading.Thread):
 
     def dequeue(self):
         return self.queue.dequeue()
+
+
+def get_augmentations(is_train):
+    if is_train:
+        augmentors = [
+            GoogleNetResize(crop_area_fraction=0.76, target_shape=224),     # TODO : 76% or 49%?
+            imgaug.RandomOrderAug(
+                [imgaug.BrightnessScale((0.6, 1.4), clip=True),
+                 imgaug.Contrast((0.6, 1.4), clip=True),
+                 imgaug.Saturation(0.4, rgb=False),
+                 # rgb-bgr conversion for the constants copied from fb.resnet.torch
+                 imgaug.Lighting(0.1,
+                                 eigval=np.asarray(
+                                     [0.2175, 0.0188, 0.0045][::-1]) * 255.0,
+                                 eigvec=np.array(
+                                     [[-0.5675, 0.7192, 0.4009],
+                                      [-0.5808, -0.0045, -0.8140],
+                                      [-0.5836, -0.6948, 0.4203]],
+                                     dtype='float32')[::-1, ::-1]
+                                 )]),
+            imgaug.Flip(horiz=True),
+        ]
+    else:
+        augmentors = [
+            imgaug.ResizeShortestEdge(256, cv2.INTER_CUBIC),
+            imgaug.CenterCrop((224, 224)),
+        ]
+    return augmentors

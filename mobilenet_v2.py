@@ -143,7 +143,7 @@ def mobilenet_v2_cls(inputs,
                     net = slim.dropout(net, keep_prob=dropout_keep_prob, is_training=is_training, scope='Dropout_1')
                     # global pool
                     # Issue #1 : https://github.com/ildoonet/tf-mobilenet-v2/issues/1
-                    net = tf.reduce_mean(net, [1, 2], keep_dims=True, name='Global_pool')
+                    net = tf.reduce_mean(net, [1, 2], keepdims=True, name='Global_pool')
                     end_points['Global_pool'] = net
 
                     # classification
@@ -171,7 +171,7 @@ mobilenet_v2_cls_025 = wrapped_partial(mobilenet_v2_cls, depth_multiplier=0.25)
 
 
 def mobilenet_v2_arg_scope(is_training=True,
-                           weight_decay=0.00004,
+                           weight_decay=0.000004,
                            stddev=0.09,
                            regularize_depthwise=False):
     """Defines the default MobilenetV2 arg scope.
@@ -187,10 +187,10 @@ def mobilenet_v2_arg_scope(is_training=True,
         'is_training': is_training,
         'center': True,
         'scale': True,
-        'decay': 0.9,
+        'decay': 0.99,
         'epsilon': 0.001,
         'fused': True,
-        'zero_debias_moving_mean': True
+        'zero_debias_moving_mean': False
     }
 
     # Set weight_decay for weights in Conv and DepthSepConv layers.

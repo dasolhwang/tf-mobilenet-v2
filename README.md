@@ -15,3 +15,4 @@ $ python3 run.py train --num_gpu=1 --depth_multiplier=1.0 --datadir=...
 - [Mobilenet V2 Pytorch Implementation : https://github.com/MG2033/MobileNet-V2](https://github.com/MG2033/MobileNet-V2)
 - [Mobilenet V1 Official Implementation](https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet_v1.py)
 - [Mobilenet V1 Official Test](https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet_v1_test.py)
+- [Checkmate : Tensorflow Drop-in Saver](https://github.com/vonclites/checkmate)
