@@ -171,8 +171,8 @@ mobilenet_v2_cls_025 = wrapped_partial(mobilenet_v2_cls, depth_multiplier=0.25)
 
 
 def mobilenet_v2_arg_scope(is_training=True,
-                           weight_decay=0.000004,
-                           stddev=0.09,
+                           weight_decay=0.0004,
+                           stddev=0.01,
                            regularize_depthwise=False):
     """Defines the default MobilenetV2 arg scope.
     Args:
@@ -187,10 +187,10 @@ def mobilenet_v2_arg_scope(is_training=True,
         'is_training': is_training,
         'center': True,
         'scale': True,
-        'decay': 0.99,
-        'epsilon': 0.001,
+        'decay': 0.999,
+        'epsilon': 0.0001,
         'fused': True,
-        'zero_debias_moving_mean': False
+        'zero_debias_moving_mean': True
     }
 
     # Set weight_decay for weights in Conv and DepthSepConv layers.

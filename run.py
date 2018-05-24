@@ -51,7 +51,7 @@ class MobilenetRunner:
         self.loss_train = None
         self.acc_train_top1 = None
         self.acc_train_top5 = None
-        self.optimizer = None
+        self.optimizers = []
         self.optimize_op = None
         self.sync_op = None
         self.enqueue_threads = None
@@ -85,7 +85,7 @@ class MobilenetRunner:
         return get_imagenet_dataflow(datadir, 'train' if is_train else 'val', batch, augmentors)
 
     def train(self, datadir=author_dir, batch=128, max_epoch=250, num_gpu=1,
-              depth_multiplier=1.0, learning_rate_init=0.045, optimizer='sgd',
+              depth_multiplier=1.0, learning_rate_init=0.0001, optimizer='rmsprop',
               model_path='/data/private/tf-mobilenet-v2-model/', checkpoint=None):
         assert os.path.exists(datadir), 'not exist datadir(%s)' % datadir
         assert batch > 0, 'batch should be larger than 0, batch=%d' % batch
@@ -96,7 +96,7 @@ class MobilenetRunner:
         assert batch % num_gpu == 0, 'batch %d should be a multiplier of num_gpu=%d, %d' % (batch, num_gpu, batch % num_gpu)
 
         op_decay_steps = int(round(DATA_PER_EPOCH * self.__op_decay_steps_epoch / batch))
-        op_decay_rate = 0.98
+        op_decay_rate = 0.99    # TODO
         __interval_train_log = int(round(DATA_PER_EPOCH * self.__interval_train_log_epoch / batch))
         __interval_valid_log = int(round(DATA_PER_EPOCH * self.__interval_valid_log_epoch / batch))
 
@@ -117,13 +117,13 @@ class MobilenetRunner:
 
             logger.info('optimizer=%s' % optimizer)
             if optimizer == 'rmsprop':
-                self.optimizer = tf.train.RMSPropOptimizer(self.learning_rate, decay=0.9, momentum=0.9)
+                self.optimizers = [tf.train.RMSPropOptimizer(self.learning_rate, decay=0.9, momentum=0.9) for _ in range(num_gpu)]
             elif optimizer == 'momentum':
-                self.optimizer = tf.train.MomentumOptimizer(self.learning_rate, momentum=0.9)
+                self.optimizers = [tf.train.MomentumOptimizer(self.learning_rate, momentum=0.9) for _ in range(num_gpu)]
             elif optimizer == 'sgd':
-                self.optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
+                self.optimizers = [tf.train.GradientDescentOptimizer(self.learning_rate) for _ in range(num_gpu)]
             elif optimizer == 'adam':
-                self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
+                self.optimizers = [tf.train.AdamOptimizer(self.learning_rate) for _ in range(num_gpu)]
             else:
                 raise Exception('invalid optimizer name=%s' % optimizer)
 
@@ -156,7 +156,7 @@ class MobilenetRunner:
                     losses.append(loss)
                     loss_w_reg = tf.reduce_sum(loss) + tf.add_n(slim.losses.get_regularization_losses(scope=scope_name))
 
-                    grad_list.append([x for x in self.optimizer.compute_gradients(loss_w_reg) if x[0] is not None])
+                    grad_list.append([x for x in self.optimizers[gpu_idx].compute_gradients(loss_w_reg) if x[0] is not None])
 
             self.output_train = tf.concat(logits, axis=0)
             train_image_batch = tf.concat(train_image_batch, axis=0)
@@ -183,7 +183,7 @@ class MobilenetRunner:
                 with tf.name_scope('apply_gradients'), tf.device(tf.DeviceSpec(device_type="GPU", device_index=idx)):
                     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, scope='tower%d' % idx)
                     with tf.control_dependencies(update_ops):
-                        train_ops.append(self.optimizer.apply_gradients(grad_and_vars, name='apply_grad_{}'.format(idx)))
+                        train_ops.append(self.optimizers[idx].apply_gradients(grad_and_vars, name='apply_grad_{}'.format(idx)))
 
             self.optimize_op = tf.group(*train_ops, name='train_op')
 
