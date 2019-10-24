@@ -28,8 +28,8 @@ logger_s = logging.getLogger('tensorpack')
 logger_s.setLevel(logging.WARNING)
 
 
-author_dir = '/data/public/ro/dataset/images/imagenet/ILSVRC/2012/object_localization/ILSVRC/Data/CLS-LOC'
-
+#author_dir = '/data/public/ro/dataset/images/imagenet/ILSVRC/2012/object_localization/ILSVRC/Data/CLS-LOC'
+author_dir = '/data/ILSVRC_2012'
 
 class MobilenetRunner:
     def __init__(self):
@@ -84,7 +84,7 @@ class MobilenetRunner:
         augmentors = get_augmentations(is_train)
         return get_imagenet_dataflow(datadir, 'train' if is_train else 'val', batch, augmentors)
 
-    def train(self, datadir=author_dir, batch=128, max_epoch=250, num_gpu=1,
+    def train(self, datadir=author_dir, batch=64, max_epoch=250, num_gpu=1,
               depth_multiplier=1.0, learning_rate_init=0.0001, optimizer='rmsprop',
               model_path='/data/private/tf-mobilenet-v2-model/', checkpoint=None):
         assert os.path.exists(datadir), 'not exist datadir(%s)' % datadir
@@ -148,6 +148,8 @@ class MobilenetRunner:
                         depth_multiplier=depth_multiplier
                     )
                     logits.append(logit)
+                    print(logit.shape)
+                    print(label_tensor)
 
                     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
                         labels=label_tensor,
@@ -232,7 +234,7 @@ class MobilenetRunner:
                             self.is_training: True
                         }
                     )
-                    if (val_step + 1) % __interval_train_log == 0:
+                    if (val_step + 1) % 100 == 0:
                         val_loss, _, _, val_lr, val_acctop1, val_acctop5, val_q_size = self.persistent_sess.run([
                             self.loss_train, self.optimize_op, self.global_step_add, self.learning_rate,
                             self.acc_train_top1, self.acc_train_top5, q_sizes[0]
